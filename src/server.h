@@ -2617,6 +2617,7 @@ void zinterCommand(client *c);
 void zrangestoreCommand(client *c);
 void zdiffCommand(client *c);
 void zscanCommand(client *c);
+void zuidgetCommand(client *c); /** added by Gumreal 20190326 */
 void hkeysCommand(client *c);
 void hvalsCommand(client *c);
 void hgetallCommand(client *c);

@@ -2841,6 +2841,710 @@ void zdiffCommand(client *c) {
     zunionInterDiffGenericCommand(c, NULL, 1, SET_OP_DIFF);
 }
 
+/* *** added by Gumreal 20190326 */
+void zuidgetCommand(client *c){
+    /* 1. declear */
+    //union
+    int unionGroupNum = 0;          //hom many union operations?
+    int *unionKeyNumPtr = NULL;      //key nums for each union operation
+    int *unionEleCountPtr = NULL;   //elements count for each union operation
+    long unionTempNum = 0;
+    int unionNumAllSum = 0;         //num of all union keys
+    zsetopsrc *unionSrc = NULL;
+    int unionGroupPos = 0;
+    int unionKeyPos = 0;
+
+    //inter
+    long interNum = 0;
+    zsetopsrc *interSrc = NULL;
+
+    //diff
+    long diffNum = 0;
+    zsetopsrc *diffSrc = NULL;
+
+    //other
+    int aggregate = REDIS_AGGR_SUM;
+    int withscores = 0;
+    long limit = -1; /* default, get an item with the max score */
+    unsigned long needResultCount = 1;
+
+    //temp
+    int beginOtherOp = 0;
+    int i, j, k;
+    zsetopval zval;
+    sds tmp = NULL;
+    robj *dstobj = NULL;
+    zset *dstzset = NULL;
+    zskiplistNode *znode;
+
+    /* 2. input parameters */
+    //2.1 pre-process: init union group num and key num
+    for(i=1; i < c->argc; i++){
+        if(!strcasecmp(c->argv[i]->ptr,"union")){
+            //union count
+            unionGroupNum++;
+
+            //union key num
+            i++; unionTempNum = 0;
+            if(i >= c->argc){
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: cannot get union num");
+                return;
+            }
+            if(getLongFromObjectOrReply(c, c->argv[i], &unionTempNum, NULL) != C_OK){
+                serverLog(LL_WARNING,"zuidget: invalid union num");
+                return;
+            }
+            if(unionTempNum < 2){
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: invalid union num");
+                return;
+            }
+
+            //union num ok
+            unionNumAllSum += unionTempNum;
+
+            //skip union keys
+            i+= unionTempNum;
+
+        }else{
+            break;
+        }
+    }
+    if(unionGroupNum >0){
+        unionKeyNumPtr = zcalloc(sizeof(int) * unionGroupNum);
+        unionEleCountPtr = zcalloc(sizeof(int) * unionGroupNum);
+        unionSrc = zcalloc(sizeof(zsetopsrc) * unionNumAllSum);
+    }
+
+    //2.2 process paramters
+    for(i=1; i < c->argc; i++){
+        //count remaining
+        int remaining = c->argc - i - 1; //the remaining parameters not including current parameter i
+
+        //2.2.1 union
+        if(!strcasecmp(c->argv[i]->ptr,"union")){
+            int unionEleTempCount = 0;
+
+            if(beginOtherOp){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: union operation cannot be after other opeartion");
+                return;
+            }
+
+            //union set num
+            unionTempNum = 0;
+            i++; remaining--;
+            if(i>=c->argc){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: need union num");
+                return;
+            }
+            if(getLongFromObjectOrReply(c, c->argv[i], &unionTempNum, NULL) != C_OK){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                serverLog(LL_WARNING,"zuidget: invald union set num");
+                return;
+            }
+            if(unionTempNum < 2 || remaining < unionTempNum){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: union sets dose not match union num");
+                return;
+            }
+
+            //get sets
+            for(j=0; j<unionTempNum; j++){
+                //pos to next
+                i++; remaining--;
+
+                //get
+                robj *obj = lookupKeyRead(c->db,c->argv[i]);
+                if (obj != NULL) {
+                    if ((obj->type != OBJ_ZSET && obj->type != OBJ_SET) || (unionKeyPos >= unionNumAllSum)) {
+                        zfree(unionKeyNumPtr);
+                        zfree(unionEleCountPtr);
+                        zfree(unionSrc);
+                        zfree(interSrc);
+                        zfree(diffSrc);
+
+                        addReply(c,shared.wrongtypeerr);
+                        serverLog(LL_WARNING,"zuidget: invalid key type or union key number");
+                        return;
+                    }
+
+                    //union set
+                    unionSrc[unionKeyPos].subject = obj;
+                    unionSrc[unionKeyPos].type = obj->type;
+                    unionSrc[unionKeyPos].encoding = obj->encoding;
+                    unionSrc[unionKeyPos].weight = 0.0;
+
+                    //union elements count
+                    unionEleTempCount += zuiLength(&unionSrc[unionKeyPos]);
+                }
+
+                //next union key
+                unionKeyPos++;
+            }
+
+            //shortcut
+            if(0 == unionEleTempCount){
+                //Skip everything if the union result is empty
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.czero);
+                return;
+            }
+
+            //group count
+            unionKeyNumPtr[unionGroupPos] = unionTempNum;
+            unionEleCountPtr[unionGroupPos] = unionEleTempCount;
+
+            //next union group
+            unionGroupPos++;
+
+        }else if(!strcasecmp(c->argv[i]->ptr,"inter")){
+            //2.2.2 inter
+            //flag
+            beginOtherOp = 1;
+
+            //de-duplicated
+            if(NULL!=interSrc){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: can only have one inter action");
+                return;
+            }
+
+            //inter set num
+            i++; remaining--;
+            if(i>=c->argc){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: need inter sets num");
+                return;
+            }
+            if(getLongFromObjectOrReply(c, c->argv[i], &interNum, NULL) != C_OK){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                serverLog(LL_WARNING,"zuidget: invalid inter set num");
+                return;
+            }
+            if(interNum < 1 || remaining < interNum){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: invalid inter sets num or not matched");
+                return;
+            }
+
+            //inter set
+            interSrc = zcalloc(sizeof(zsetopsrc)*interNum);
+            for(j=0; j<interNum; j++){
+                //pos to next
+                i++; remaining--;
+
+                //get
+                robj *obj = lookupKeyRead(c->db,c->argv[i]);
+                if (obj != NULL) {
+                    if (obj->type != OBJ_ZSET && obj->type != OBJ_SET) {
+                        zfree(unionKeyNumPtr);
+                        zfree(unionEleCountPtr);
+                        zfree(unionSrc);
+                        zfree(interSrc);
+                        zfree(diffSrc);
+
+                        addReply(c,shared.wrongtypeerr);
+                        serverLog(LL_WARNING,"zuidget: invalid inter key type");
+                        return;
+                    }
+
+                    //inter set
+                    interSrc[j].subject = obj;
+                    interSrc[j].type = obj->type;
+                    interSrc[j].encoding = obj->encoding;
+                    interSrc[j].weight = (j==interNum-1)?1.0:0.0;
+
+                }else {
+                    //if any inter SET or ZSET does not exists, just return empty
+                    zfree(unionKeyNumPtr);
+                    zfree(unionEleCountPtr);
+                    zfree(unionSrc);
+                    zfree(interSrc);
+                    zfree(diffSrc);
+
+                    addReply(c,shared.czero);
+                    return;
+                }
+            }
+        }else if(!strcasecmp(c->argv[i]->ptr,"weights")){
+            //2.2.3 weights
+            //flag
+            beginOtherOp = 1;
+
+            //total weights num
+            double tempWeight = 0.0;
+            int totalWeightsNum = unionGroupNum + interNum;
+
+            //check
+            if(remaining < totalWeightsNum){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: invalid weights num");
+                return;
+            }
+
+            /* weights */
+            for (j=0; j<totalWeightsNum; j++) {
+                //pos
+                i++; remaining--;
+
+                //get weights
+                tempWeight = 0.0;
+                if (getDoubleFromObjectOrReply(c, c->argv[i],&tempWeight, NULL) != C_OK){
+                    zfree(unionKeyNumPtr);
+                    zfree(unionEleCountPtr);
+                    zfree(unionSrc);
+                    zfree(interSrc);
+                    zfree(diffSrc);
+
+                    serverLog(LL_WARNING,"zuidget: invalid weights value");
+                    return;
+                }
+
+                //set
+                if(j<unionGroupNum){
+                    //union set weights
+                    int keyIter = 0;
+                    for(int group=0; group<unionGroupNum; group++){
+                        if(group == j){
+                            for(k=0; k<unionKeyNumPtr[group]; k++){
+                                if(NULL != unionSrc[keyIter+k].subject){
+                                    unionSrc[keyIter+k].weight = tempWeight;
+                                }
+                            }
+
+                            //ok, we have set weights for the union group, skip other groups
+                            break;
+                        }
+
+                        //prepare to the next group union keys
+                        keyIter += unionKeyNumPtr[group];
+                    }
+
+                }else{
+                    //inter set weights
+                    if(NULL != interSrc[j-unionGroupNum].subject){
+                        interSrc[j-unionGroupNum].weight = tempWeight;
+                    }
+                }
+            }
+
+        }else if(!strcasecmp(c->argv[i]->ptr,"aggregate")){
+            //2.2.4 aggregate
+            //flag
+            beginOtherOp = 1;
+
+            //has value?
+            if(remaining<1){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: need aggregate value");
+                return;
+            }
+
+            //aggregate
+            i++; remaining--;
+            if (!strcasecmp(c->argv[i]->ptr,"sum")) {
+                aggregate = REDIS_AGGR_SUM;
+
+            } else if (!strcasecmp(c->argv[i]->ptr,"min")) {
+                aggregate = REDIS_AGGR_MIN;
+
+            } else if (!strcasecmp(c->argv[i]->ptr,"max")) {
+                aggregate = REDIS_AGGR_MAX;
+
+            } else {
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: invalid aggregate value");
+                return;
+            }
+
+        }else if(!strcasecmp(c->argv[i]->ptr,"diff")){
+            //2.2.5 diff
+            //flag
+            beginOtherOp = 1;
+
+            //de-duplicated
+            if(NULL!=diffSrc){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: can only have one diff action");
+                return;
+            }
+
+            //diff
+            // parameter: diff sets number
+            i++; remaining--;
+            if(i>=c->argc){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: need diff sets num");
+                return;
+            }
+            if(getLongFromObjectOrReply(c, c->argv[i], &diffNum, NULL) != C_OK){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                serverLog(LL_WARNING,"zuidget: invalid diff set num");
+                return;
+            }
+            if(diffNum<=0 || remaining < diffNum){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget:  invalid diff sets num or not matched");
+                return;
+            }
+
+            //get diff sets
+            diffSrc = zcalloc(sizeof(zsetopsrc) * diffNum);
+            for (j = 0; j<diffNum; j++) {
+                i++; remaining--;
+
+                robj *obj = lookupKeyRead(c->db,c->argv[i]);
+                if (obj != NULL) {
+                    if (obj->type != OBJ_ZSET && obj->type != OBJ_SET) {
+                        zfree(unionKeyNumPtr);
+                        zfree(unionEleCountPtr);
+                        zfree(unionSrc);
+                        zfree(interSrc);
+                        zfree(diffSrc);
+
+                        addReply(c,shared.wrongtypeerr);
+                        serverLog(LL_WARNING,"zuidget: invalid diff key set");
+                        return;
+                    }
+
+                    diffSrc[j].subject = obj;
+                    diffSrc[j].type = obj->type;
+                    diffSrc[j].encoding = obj->encoding;
+                }
+            }
+
+        }else if(!strcasecmp(c->argv[i]->ptr,"withscores")){
+            //2.2.6 withscores
+            //flag
+            beginOtherOp = 1;
+
+            //withscores
+            withscores = 1;
+
+        }else if(!strcasecmp(c->argv[i]->ptr,"limit")){
+            //2.2.7 limit
+            //flag
+            beginOtherOp = 1;
+
+            //has value?
+            if(remaining<1){
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                addReply(c,shared.syntaxerr);
+                serverLog(LL_WARNING,"zuidget: need limit value");
+                return;
+            }
+
+            //limit
+            i++; remaining--;
+            if (getLongFromObjectOrReply(c, c->argv[i], &limit, NULL) != C_OK){
+                /* no limit number */
+                zfree(unionKeyNumPtr);
+                zfree(unionEleCountPtr);
+                zfree(unionSrc);
+                zfree(interSrc);
+                zfree(diffSrc);
+
+                serverLog(LL_WARNING,"zuidget: invalid limit value");
+                return;
+            }
+            if(limit>0){
+                needResultCount = limit;
+            }else{
+                needResultCount = -1 * limit;
+            }
+
+        }else {
+            //invalid command
+            zfree(unionKeyNumPtr);
+            zfree(unionEleCountPtr);
+            zfree(unionSrc);
+            zfree(interSrc);
+            zfree(diffSrc);
+
+            addReply(c,shared.syntaxerr);
+            serverLog(LL_WARNING,"zuidget: invalid command action keyword");
+            return;
+        }
+    }
+
+    /* 3. sort sets from the smallest to largest, this will improve our algorithm's performance */
+    //already checkout empty union sets above, just checkout inter set
+    //inter set
+    //3.1 sort
+    qsort(interSrc,interNum,sizeof(zsetopsrc),zuiCompareByCardinality);
+
+    //3.2 Skip everything if the smallest input is empty
+    if (0 == zuiLength(&interSrc[0])) {
+        zfree(unionKeyNumPtr);
+        zfree(unionEleCountPtr);
+        zfree(unionSrc);
+        zfree(interSrc);
+        zfree(diffSrc);
+
+        addReply(c,shared.czero);
+        return;
+    }
+
+    /* 4. inter */
+    //4.1 init variables and the iterator
+    dstobj = createZsetObject();
+    dstzset = dstobj->ptr;
+
+    srand(time(NULL));
+    memset(&zval, 0, sizeof(zval));
+
+    //4.2 iterate the smallest set
+    //4.2.1 init iterator
+    zuiInitIterator(&interSrc[0]);
+
+    //4.2.2 iterate
+    while (zuiNext(&interSrc[0],&zval)) {
+        double score, value;
+        serverLog(LL_NOTICE,"case11: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[0].weight);
+        score = interSrc[0].weight * zval.score;
+        if (isnan(score)){
+            score = 0;
+        }
+
+        //find the item in other sets
+        for (i = 1; i < interNum; i++) {
+            if (NULL == interSrc[i].subject){
+                break;
+
+            }else if (interSrc[i].subject == interSrc[0].subject) {
+                serverLog(LL_NOTICE,"case12: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[i].weight);
+                value = zval.score * interSrc[i].weight;
+                zunionInterAggregate(&score,value,aggregate);
+
+            } else if (zuiFind(&interSrc[i],&zval,&value)) {
+                serverLog(LL_NOTICE,"case13: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[i].weight);
+                value *= interSrc[i].weight;
+                zunionInterAggregate(&score,value,aggregate);
+            } else {
+                break;
+            }
+        }
+
+        //Only continue to find in union sets, if present in every inter set
+        if(i == interNum){
+            int keyIter = 0;
+
+            //for each union group
+            for(int group=0; group < unionGroupNum; group++, i++){
+                //init group_found flag
+                int inUnionSrc = 0;
+
+                //the union result is empty
+                if(0 == unionEleCountPtr[group]){
+                    break;
+                }
+
+                for(k=0; k < unionKeyNumPtr[group]; k++){
+                    if (zuiFind(&unionSrc[keyIter+k],&zval,&value)) {
+                        serverLog(LL_NOTICE,"case20: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, unionSrc[keyIter+k].weight);
+                        value *= unionSrc[keyIter+k].weight;
+                        zunionInterAggregate(&score,value,aggregate);
+                        inUnionSrc=1;
+                        break;
+                    }
+                }
+
+                //pos to the first set of the next union group
+                keyIter+=unionKeyNumPtr[group];
+
+                //found?
+                if(0==inUnionSrc){
+                    break;
+                }
+            }
+        }
+
+        //Only continue when present in every input
+        if (i == interNum + unionGroupNum) {
+            //finding the item in the diff sets
+            int inDiffSrc = 0;
+            for (k = 0; k < diffNum; k++) {
+                if (zuiFind(&diffSrc[k],&zval,&value)){
+                    inDiffSrc = 1;
+                    break;
+                }
+            }
+
+            //found in the diff sets
+            if(1 == inDiffSrc){
+                continue;
+            }
+
+            //not found in the diff sets, the item can be added to the result
+            if(dstzset->zsl->length < needResultCount){
+                //add to list
+                tmp = zuiNewSdsFromValue(&zval);
+                znode = zslInsert(dstzset->zsl, score, tmp);
+                dictAdd(dstzset->dict,tmp,&znode->score);
+
+            }else if(limit>0){
+                /* need elements with MIN scores */
+                if(score < dstzset->zsl->tail->score){
+                    //add to list
+                    tmp = zuiNewSdsFromValue(&zval);
+                    znode = zslInsert(dstzset->zsl, score, tmp);
+                    dictAdd(dstzset->dict,tmp,&znode->score);
+
+                    //delete the Max one from the list tail
+                    zslDelete(dstzset->zsl,
+                              dstzset->zsl->tail->score,
+                              dstzset->zsl->tail->ele,
+                              NULL);
+                }
+            }else{
+                /* need elements with MAX scores */
+                if(score > dstzset->zsl->header->score){
+                    //add new
+                    tmp = zuiNewSdsFromValue(&zval);
+                    znode = zslInsert(dstzset->zsl, score, tmp);
+                    dictAdd(dstzset->dict,tmp,&znode->score);
+
+                    //delete the Min one form list head
+                    zslDelete(dstzset->zsl,
+                              dstzset->zsl->header->level[0].forward->score,
+                              dstzset->zsl->header->level[0].forward->ele,
+                              NULL);
+                }
+            }
+        }
+    }
+
+    //4.2.3 release the iterator
+    zuiClearIterator(&interSrc[0]);
+
+    //5. reply
+    if(dstzset->zsl->length>0){
+        //add elements to reply
+        addReplyArrayLen(c, (1==withscores)?(2*dstzset->zsl->length):dstzset->zsl->length);
+        zskiplistNode *tempNode = dstzset->zsl->tail;
+        while(tempNode){
+            addReplyBulkCBuffer(c, tempNode->ele, sdslen(tempNode->ele));
+            if(1==withscores){
+                addReplyDouble(c, tempNode->score);
+            }
+            tempNode = tempNode->backward;
+        }
+    }else{
+        //empty result
+        addReply(c,shared.czero);
+    }
+
+    //6. free and return
+    decrRefCount(dstobj);
+    zfree(unionKeyNumPtr);
+    zfree(unionEleCountPtr);
+    zfree(unionSrc);
+    zfree(interSrc);
+    zfree(diffSrc);
+    return;
+}
+
+
 typedef enum {
     ZRANGE_DIRECTION_AUTO = 0,
     ZRANGE_DIRECTION_FORWARD,

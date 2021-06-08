@@ -539,6 +539,11 @@ struct redisCommand redisCommandTable[] = {
      "read-only random @sortedset",
      0,NULL,1,1,1,0,0,0},
 
+    /** added by Gumreal 20190326 */
+    {"zuidget",zuidgetCommand,-4,
+     "read-only @sortedset",
+     0,NULL,0,0,0,0,0,0},
+
     {"zpopmin",zpopminCommand,-2,
      "write fast @sortedset",
      0,NULL,1,1,1,0,0,0},
