@@ -2841,7 +2841,7 @@ void zdiffCommand(client *c) {
     zunionInterDiffGenericCommand(c, NULL, 1, SET_OP_DIFF);
 }
 
-/* *** added by Gumreal 20190326 */
+/* *** added by Gumreal 20210608 */
 void zuidgetCommand(client *c){
     /* 1. declear */
     //union
@@ -3400,7 +3400,7 @@ void zuidgetCommand(client *c){
     //4.2.2 iterate
     while (zuiNext(&interSrc[0],&zval)) {
         double score, value;
-        serverLog(LL_NOTICE,"case11: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[0].weight);
+        //serverLog(LL_NOTICE,"case11: %s, zval.score: %.3f, weight: %.3f", zval.ele?zval.ele:sdsnewlen((char*)zval.estr,zval.elen), zval.score, interSrc[0].weight);
         score = interSrc[0].weight * zval.score;
         if (isnan(score)){
             score = 0;
@@ -3412,12 +3412,12 @@ void zuidgetCommand(client *c){
                 break;
 
             }else if (interSrc[i].subject == interSrc[0].subject) {
-                serverLog(LL_NOTICE,"case12: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[i].weight);
+                //serverLog(LL_NOTICE,"case12: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[i].weight);
                 value = zval.score * interSrc[i].weight;
                 zunionInterAggregate(&score,value,aggregate);
 
             } else if (zuiFind(&interSrc[i],&zval,&value)) {
-                serverLog(LL_NOTICE,"case13: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, interSrc[i].weight);
+                //serverLog(LL_NOTICE,"case13: %s, zval.score: %.3f, weight: %.3f", zval.ele, value, interSrc[i].weight);
                 value *= interSrc[i].weight;
                 zunionInterAggregate(&score,value,aggregate);
             } else {
@@ -3441,7 +3441,7 @@ void zuidgetCommand(client *c){
 
                 for(k=0; k < unionKeyNumPtr[group]; k++){
                     if (zuiFind(&unionSrc[keyIter+k],&zval,&value)) {
-                        serverLog(LL_NOTICE,"case20: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, unionSrc[keyIter+k].weight);
+                        //serverLog(LL_NOTICE,"case20: %s, zval.score: %.3f, weight: %.3f", zval.ele, zval.score, unionSrc[keyIter+k].weight);
                         value *= unionSrc[keyIter+k].weight;
                         zunionInterAggregate(&score,value,aggregate);
                         inUnionSrc=1;
