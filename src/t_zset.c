@@ -3366,6 +3366,19 @@ void zuidgetCommand(client *c){
             return;
         }
     }
+    if(interNum <= 0){
+        //invalid command
+        zfree(unionKeyNumPtr);
+        zfree(unionEleCountPtr);
+        zfree(unionSrc);
+        zfree(interSrc);
+        zfree(diffSrc);
+
+        addReply(c,shared.syntaxerr);
+        serverLog(LL_WARNING,"zuidget: at least one inter set");
+        return;
+    }
+
 
     /* 3. sort sets from the smallest to largest, this will improve our algorithm's performance */
     //already checkout empty union sets above, just checkout inter set
